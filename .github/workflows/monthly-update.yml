@@ -1,0 +1,38 @@
+name: 아파트 매매가 월간 자동 업데이트
+
+on:
+  schedule:
+    # 매주 월요일 01:00 UTC(한국시간 10:00). REB 공표 시점이 매달 정확히 언제인지
+    # 보장되지 않아 "월 1회" 대신 "매주 확인, 새 달이 있으면만 게시" 방식으로 폴링한다.
+    - cron: "0 1 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publish-next-month:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: 다음 달 데이터 생성 시도 (REB 미공표면 조용히 종료)
+        env:
+          REB_API_KEY: ${{ secrets.REB_API_KEY }}
+        run: python automation/publish_next_month.py
+
+      - name: 변경사항 있으면 커밋 및 게시
+        run: |
+          git config user.name "aptmacro-bot"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "새로 게시할 달 없음 - 변경사항 없음"
+          else
+            git commit -m "자동 업데이트: $(date -u +%Y-%m-%d)"
+            git push
+          fi
