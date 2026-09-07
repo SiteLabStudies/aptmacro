@@ -20,6 +20,14 @@ jobs:
         with:
           python-version: "3.x"
 
+      # 프리플라이트: 이미 공표된 달로 REB 응답을 점검해 인증키가 살아 있는지 매주 확인한다.
+      # (아래 단계는 '새 달이 미공표'면 키 상태와 무관하게 조용히 끝나므로,
+      #  이 단계가 없으면 키가 죽어 있어도 몇 주씩 초록불이 유지된다 — 2026-08 사고의 구조적 원인)
+      - name: 인증키 점검
+        env:
+          REB_API_KEY: ${{ secrets.REB_API_KEY }}
+        run: python automation/check_key.py
+
       - name: 다음 달 데이터 생성 시도 (REB 미공표면 조용히 종료)
         env:
           REB_API_KEY: ${{ secrets.REB_API_KEY }}
