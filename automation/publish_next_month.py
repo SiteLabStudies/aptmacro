@@ -1,5 +1,4 @@
-"""
-GitHub Actions에서 매달 실행되는 자동 게시 스크립트.
+"""GitHub Actions에서 매주 실행되는 (기존) 월별 지도 페이지 자동 게시 스크립트.
 
 로직: 저장소 안에 이미 있는 '{연도}년 {월}월.html' 파일들 중 가장 최신 달의
 "다음 달"을 REB API로 조회한다. 아직 REB가 그 달을 공표하지 않았으면
@@ -7,6 +6,16 @@ GitHub Actions에서 매달 실행되는 자동 게시 스크립트.
 다시 시도되므로 실패로 취급하지 않는다.
 
 REB_API_KEY는 GitHub Actions Secrets에서 환경변수로 주입된다.
+
+════════════════════════════════════════════════════════════════════
+⚠ 2026-09-04 수정 — 조용한 오게시 사고 방지
+  2026-08-24 실행분이 '2026년 7월.html'을 만들었는데, 실제로는 **종로구 한 곳만**
+  갱신되고 나머지 70개 지역은 템플릿의 옛 값 그대로였다.
+  원인: Secrets에 REB_API_KEY가 없어 REB가 무인증(sample) 모드로 5개 행만 반환했고,
+       그 중 우리 지역과 겹치는 것이 종로구뿐이었다. 기존 코드는 이걸 경고만 찍고
+       그대로 파일을 쓰고 커밋했다.
+  대책: 아래 3중 가드. 하나라도 걸리면 파일을 쓰지 않고 exit 1 (Actions가 빨갛게 실패).
+════════════════════════════════════════════════════════════════════
 """
 import re
 import sys
@@ -14,13 +23,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from reb_extract import load_prices_with_prev  # noqa: E402
+from reb_extract import load_prices_with_prev, CLS_ID_BY_VAR  # noqa: E402
 from generate_monthly_html import apply_monthly_prices_v2  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUTOMATION_DIR = Path(__file__).resolve().parent
 
 FILENAME_RE = re.compile(r"^(\d{4})년 (\d{1,2})월\.html$")
+EXPECTED_REGIONS = len(CLS_ID_BY_VAR)   # 71개 폴리곤 전부 값이 있어야 정상
+
+
+def die(msg: str):
+    print(f"::error::{msg}")
+    raise SystemExit(1)
 
 
 def find_latest_published_month() -> tuple:
@@ -72,18 +87,26 @@ def main():
         print("REB 응답에 지역 데이터가 없음, 이번 실행은 건너뜀")
         return
 
-    if missing:
-        print(f"경고: {len(missing)}개 지역 매핑 실패 - {missing}")
+    # ── 가드 1: 지역이 전부 들어왔는가 (무인증/부분응답 차단) ──
+    if missing or len(prices) != EXPECTED_REGIONS:
+        die(f"지역 {len(prices)}/{EXPECTED_REGIONS}개만 조회됨 (누락 {len(missing)}개: {missing[:5]}…). "
+            f"REB_API_KEY가 없거나 잘못됐을 때 나타나는 증상입니다. 게시를 중단합니다.")
 
     template_html = (AUTOMATION_DIR / "map_template.html").read_text(encoding="utf-8")
     period_label = f"{target_year}년 {target_month}월"
     new_html, unmatched = apply_monthly_prices_v2(template_html, prices, prev_prices, period_label)
+
+    # ── 가드 2: 템플릿의 모든 블록이 교체됐는가 ──
     if unmatched:
-        print(f"경고: 치환 실패 {len(unmatched)}개 - {unmatched}")
+        die(f"치환 실패 {len(unmatched)}개: {unmatched[:5]}… 게시를 중단합니다.")
+
+    # ── 가드 3: 결과가 템플릿과 다른가 (= 실제로 값이 들어갔는가) ──
+    if new_html == template_html:
+        die("생성 결과가 템플릿과 동일합니다 — 값이 하나도 반영되지 않았습니다. 게시를 중단합니다.")
 
     out_path = REPO_ROOT / f"{target_year}년 {target_month}월.html"
     out_path.write_text(new_html, encoding="utf-8")
-    print(f"생성: {out_path.name}")
+    print(f"생성: {out_path.name} (지역 {len(prices)}개 반영)")
 
     insert_dropdown_entry(REPO_ROOT / "index.html", target_year, target_month)
     print("index.html 드롭다운 갱신 완료")
